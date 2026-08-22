@@ -57,7 +57,7 @@
 | Источник | Счета | Данные берутся из |
 |----------|-------|-------------------|
 | FSR | Lite Invest, Whitelist, TINKD, TRNSQD | `...\Data\MVS\{Prefix}.{Section}.{Ticker}_Settings.tmp` |
-| EasyScalp | MD264564, Личный | `...\Config\Settings\Trade_{GUID}_Settings.xml` |
+| EasyScalp | Ваш аккаунт, Личный | `...\Config\Settings\Trade_{GUID}_Settings.xml` |
 | Крипто | BINAD, BYBITD | `...\Data\backup\MVS\...` |
 
 ## Секции рынка

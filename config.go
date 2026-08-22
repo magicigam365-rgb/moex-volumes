@@ -43,7 +43,7 @@ type Config struct {
 	PropName   string `json:"prop_name"`   // имя выбранного пропа
 
 	// Фильтрация Trade-файлов EasyScalp
-	EasyScalpAccount string `json:"easyscalp_account"` // AccountID пропа ("", "MD264564")
+	EasyScalpAccount string `json:"easyscalp_account"` // AccountID пропа ("")
 	EasyScalpMarket  string `json:"easyscalp_market"`  // рынок: "", "STOCK", "FUT", "CURRENCY"
 
 	// Фильтрация стаканов FSR

@@ -11,7 +11,7 @@ import (
 
 // PropAccount describes one trading account detected from EasyScalp or FSR.
 type PropAccount struct {
-	Name          string  // display name: "FSR Launcher", "MD264564 — EasyScalp 5.1", etc.
+	Name          string  // display name: "FSR Launcher", "EasyScalp 5.1", etc.
 	Source        string  // "fsr" or "easyscalp"
 	AccountID     string  // EasyScalp AccountID (empty for FSR / default)
 	MVSPath       string  // path to MVS folder (FSR)
