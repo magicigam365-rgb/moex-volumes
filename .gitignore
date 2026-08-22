@@ -1,0 +1,11 @@
+*.exe
+*.upx
+*.syso
+*.zip
+backups/
+deploy/
+moex-volumes
+config.json
+reference.json
+MOEX_Volumes_Guide.pdf
+MOEX_Volumes_Guide.py
