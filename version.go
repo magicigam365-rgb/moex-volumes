@@ -1,7 +1,7 @@
 package main
 
 const (
-	AppVersion = "1.1"
+	AppVersion = "1.2"
 	AppName    = "MOEX Volumes"
 )
 
@@ -13,6 +13,18 @@ const (
 
 var Changelog = []VersionEntry{
 	{
+		Version: "1.2",
+		Date:    "2026-08-22",
+		Changes: []string{
+			"Встроенная справка/инструкция по эксплуатации (кнопка «Справка»)",
+			"Автообновление: прогресс-бар загрузки, кнопка «Отмена»",
+			"Счёт «Личный» вместо «(default)» для EasyScalp",
+			"Режим цены пункта % от стоимости контракта (для крипты)",
+			"Backup MVS: крипто-счета BINAD (CCUR, CCUR_FUT), BYBITD (linear, spot)",
+			"Оптимизация GUI: метки, отступы",
+		},
+	},
+	{
 		Version: "1.1",
 		Date:    "2026-08-24",
 		Changes: []string{
@@ -20,6 +32,8 @@ var Changelog = []VersionEntry{
 			"Удалённое обновление через GitHub Releases",
 			"Выбор источника данных: MOEX API (ограничения) vs проп-сервер (из папки)",
 			"Выбор проп-счёта: выпадающий список подключённых пропов",
+			"EasyScalp: выбор проп-счёта (AccountID) и секции рынка (STOCK/FUT/CURRENCY)",
+			"FSR: выбор пропа (префикс) и секции рынка (TQBR/FUT)",
 			"Убрано поле ввода префиксов — определяются автоматически",
 		},
 	},

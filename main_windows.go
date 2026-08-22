@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,24 +40,13 @@ func main() {
 		os.Exit(0)
 	}
 
+	checkAndNotifyUpdate()
 	runApp(cfg, configPath)
 }
 
-// showAbout opens the "О программе" dialog with version, changelog, and help.
+// showAbout opens the "Справка" dialog with the full user guide.
 func showAbout() {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s v%s\n\n", AppName, AppVersion))
-	sb.WriteString("Загрузка объёмов MOEX для FSR и EasyScalp.\n\n")
-	sb.WriteString("Возможности:\n")
-	for _, entry := range Changelog {
-		sb.WriteString(fmt.Sprintf("\nv%s (%s):\n", entry.Version, entry.Date))
-		for _, c := range entry.Changes {
-			sb.WriteString(fmt.Sprintf("  — %s\n", c))
-		}
-	}
-	sb.WriteString("\nVK: https://vk.me/join/in94ilwPA5PTdJy2LI6w5MQGCCoY3U/mA4g=")
-
-	walk.MsgBox(nil, AppName+" — Справка", sb.String(), walk.MsgBoxIconInformation)
+	walk.MsgBox(nil, helpTitle, helpText, walk.MsgBoxIconInformation)
 }
 
 // checkAndNotifyUpdate checks GitHub for updates and shows dialog if available.
@@ -71,17 +61,18 @@ func checkAndNotifyUpdate() string {
 		return ""
 	}
 
-	msg := fmt.Sprintf("Доступна новая версия: %s\nТекущая версия: %s\n\nЗагрузить новую версию?",
+	msg := fmt.Sprintf("Доступна новая версия: %s\nТекущая версия: %s",
 		release.TagName, AppVersion)
 	result := walk.MsgBox(nil, AppName+" — Обновление", msg,
 		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion)
 
-	if result != 6 {
+	if result != 6 { // No
 		return ""
 	}
 
 	destPath := versionFilePath(normalizeVersion(release.TagName))
-	if err := downloadUpdate(client, downloadURL, destPath); err != nil {
+	err = downloadWithProgress(client, downloadURL, destPath, release.TagName)
+	if err != nil {
 		walk.MsgBox(nil, AppName+" — Ошибка", "Не удалось загрузить обновление:\n"+err.Error(),
 			walk.MsgBoxIconError)
 		return ""
@@ -95,20 +86,73 @@ func checkAndNotifyUpdate() string {
 	return destPath
 }
 
+// downloadWithProgress shows a progress dialog and downloads the update.
+func downloadWithProgress(client *http.Client, url, destPath, version string) error {
+	dlg, err := walk.NewDialog(nil)
+	if err != nil {
+		return downloadUpdate(client, url, destPath, nil)
+	}
+
+	dlg.SetTitle(AppName + " — Загрузка " + version)
+	dlg.SetLayout(walk.NewVBoxLayout())
+
+eterminateLabel, _ := walk.NewLabel(dlg)
+eterminateLabel.SetText("Загрузка " + version + "...")
+
+	progress, _ := walk.NewProgressBar(dlg)
+	progress.SetRange(0, 1000)
+
+	cancelBtn, _ := walk.NewPushButton(dlg)
+	cancelBtn.SetText("Отмена")
+
+	var dlErr error
+	done := make(chan struct{})
+	cancel := make(chan struct{})
+
+	cancelBtn.Clicked().Attach(func() {
+		close(cancel)
+		dlg.Close(0)
+	})
+
+	go func() {
+		dlErr = downloadUpdate(client, url, destPath, func(downloaded, total int64) {
+			if total > 0 {
+				pct := int(float64(downloaded) / float64(total) * 1000)
+				progress.SetValue(pct)
+			}
+		})
+		close(done)
+	}()
+
+	// Poll for completion/cancel while dialog runs
+	go func() {
+		select {
+		case <-cancel:
+		case <-done:
+			dlg.Close(1)
+		}
+	}()
+
+	dlg.Run()
+	return dlErr
+}
+
 type guiFields struct {
 	days   *walk.LineEdit
 	kLoad  *walk.LineEdit
 	kVol1  *walk.LineEdit
 	kVol2  *walk.LineEdit
-	money  *walk.LineEdit
+	money     *walk.LineEdit
+	moneyUnit *walk.ComboBox
 	workK1 *walk.LineEdit
 	workK2 *walk.LineEdit
 	workK3 *walk.LineEdit
 	workK4 *walk.LineEdit
 
 	// Новые поля
-	dataSource *walk.ComboBox
 	propSelect *walk.ComboBox
+	tradeMarket *walk.ComboBox
+	fsrMarket   *walk.ComboBox
 }
 
 func parseFloat(s string) (float64, error) {
@@ -158,6 +202,15 @@ func (f *guiFields) apply(cfg *Config) error {
 	}
 	cfg.MoneyPerPoint = money
 
+	if f.moneyUnit != nil {
+		idx := f.moneyUnit.CurrentIndex()
+		if idx == 1 {
+			cfg.MoneyUnit = "%"
+		} else {
+			cfg.MoneyUnit = "₽/$"
+		}
+	}
+
 	var wk [4]float64
 	values := []string{f.workK1.Text(), f.workK2.Text(), f.workK3.Text(), f.workK4.Text()}
 	for i, v := range values {
@@ -173,9 +226,6 @@ func (f *guiFields) apply(cfg *Config) error {
 }
 
 func runApp(cfg *Config, configPath string) {
-	// Проверка обновлений при старте (в фоне)
-	go checkAndNotifyUpdate()
-
 	var te *walk.TextEdit
 	var btnRun *walk.PushButton
 	var progress *walk.ProgressBar
@@ -191,10 +241,18 @@ func runApp(cfg *Config, configPath string) {
 	if len(propNames) == 0 {
 		propNames = []string{"(пропы не найдены)"}
 	}
-	selectedPropIdx := 0
 
-	dataSources := []string{"MOEX API (биржа)", "Проп-сервер (локально)"}
-	selectedDS := 0
+	// Сканируем Trade-файлы для списков рынков EasyScalp
+	tradeMarkets := ScanTradeMarketsGeneric(cfg.EasyScalpFile)
+	if len(tradeMarkets) == 0 {
+		tradeMarkets = []string{"STOCK", "FUT", "CURRENCY"}
+	}
+
+	// Сканируем MVS для списков рынков FSR
+	fsrMarkets := ScanFSRMarketsGeneric(cfg.FSRMvsDir)
+	if len(fsrMarkets) == 0 {
+		fsrMarkets = []string{"TQBR", "FUT"}
+	}
 
 	appendLog := func(s string) {
 		if te != nil {
@@ -215,13 +273,21 @@ func runApp(cfg *Config, configPath string) {
 			return
 		}
 
-		// Применяем выбор проп-счёта
+		// Применяем выбор проп-счёта / аккаунта
 		if f.propSelect != nil {
 			idx := f.propSelect.CurrentIndex()
 			if idx >= 0 && idx < len(props) {
 				prop := props[idx]
 				next.FSRMvsDir = prop.MVSPath
 				next.EasyScalpFile = prop.AppSettings
+				// Если выбран конкретный префикс (личный счёт в FSR)
+				if prop.Source == "fsr" && prop.Name != "FSR Launcher" && prop.Name != "FSR Launcher (x64)" {
+					next.FSRPrefix = prop.Name
+				}
+				// Если выбран конкретный AccountID в EasyScalp
+				if prop.Source == "easyscalp" && prop.AccountID != "" {
+					next.EasyScalpAccount = prop.AccountID
+				}
 				if prop.MoneyPerPoint > 0 {
 					next.MoneyPerPoint = prop.MoneyPerPoint
 				}
@@ -229,17 +295,19 @@ func runApp(cfg *Config, configPath string) {
 			}
 		}
 
-		// Применяем выбор источника данных
-		if f.dataSource != nil {
-			idx := f.dataSource.CurrentIndex()
-			if idx == 1 {
-				// Проп-сервер: используем локальные данные
-				if f.propSelect != nil {
-					propIdx := f.propSelect.CurrentIndex()
-					if propIdx >= 0 && propIdx < len(props) {
-						next.FSRMvsDir = props[propIdx].MVSPath
-					}
-				}
+		// Применяем фильтр рынка EasyScalp
+		if f.tradeMarket != nil {
+			idx := f.tradeMarket.CurrentIndex()
+			if idx >= 0 && idx < len(tradeMarkets) {
+				next.EasyScalpMarket = tradeMarkets[idx]
+			}
+		}
+
+		// Применяем фильтр рынка FSR
+		if f.fsrMarket != nil {
+			idx := f.fsrMarket.CurrentIndex()
+			if idx >= 0 && idx < len(fsrMarkets) {
+				next.FSRMarket = fsrMarkets[idx]
 			}
 		}
 
@@ -296,23 +364,15 @@ func runApp(cfg *Config, configPath string) {
 		wk = cfg.WorkK[:4]
 	}
 	fm := func(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+	moneyUnits := []string{"₽/$", "%"}
+	if cfg.MoneyUnit == "%" {
+		moneyUnits = []string{"%", "₽/$"}
+	}
 
-	grp := GroupBox{
-		Title:  "Настройки",
-		Layout: Grid{Columns: 3, Spacing: 6},
+	grpData := GroupBox{
+		Title:  "Счёт",
+		Layout: Grid{Columns: 2, Spacing: 6},
 		Children: []Widget{
-			Label{Text: "Источник данных"},
-			ComboBox{
-				AssignTo: &f.dataSource,
-				Model:    dataSources,
-				OnCurrentIndexChanged: func() {
-					selectedDS = f.dataSource.CurrentIndex()
-					_ = selectedDS
-				},
-			},
-			Label{},
-
-			Label{Text: "Проп-счёт"},
 			ComboBox{
 				AssignTo: &f.propSelect,
 				Model:    propNames,
@@ -321,31 +381,39 @@ func runApp(cfg *Config, configPath string) {
 					if idx >= 0 && idx < len(props) && props[idx].MoneyPerPoint > 0 {
 						f.money.SetText(strconv.FormatFloat(props[idx].MoneyPerPoint, 'f', -1, 64))
 					}
-					selectedPropIdx = f.propSelect.CurrentIndex()
-					_ = selectedPropIdx
 				},
 			},
 			Label{},
+		},
+	}
 
+	grpCalc := GroupBox{
+		Title:  "Параметры расчёта",
+		Layout: Grid{Columns: 3, Spacing: 6},
+		Children: []Widget{
 			Label{Text: "Торговых дней"},
 			LineEdit{AssignTo: &f.days, MaxLength: 3, Text: strconv.Itoa(cfg.Days)},
 			Label{},
 
-			Label{Text: "k_load (загрузка, FilledAt)"},
+			Label{Text: "Заполнение"},
 			LineEdit{AssignTo: &f.kLoad, Text: fm(cfg.KLoad)},
 			Label{},
 
-			Label{Text: "k_vol1 (объёмы 1, BigAmount)"},
+			Label{Text: "Объём 1"},
 			LineEdit{AssignTo: &f.kVol1, Text: fm(cfg.KVol1)},
 			Label{},
 
-			Label{Text: "k_vol2 (объёмы 2, HugeAmount)"},
+			Label{Text: "Объём 2"},
 			LineEdit{AssignTo: &f.kVol2, Text: fm(cfg.KVol2)},
 			Label{},
 
-			Label{Text: "Цена пункта, руб (TRADING)"},
-			LineEdit{AssignTo: &f.money, Text: fm(cfg.MoneyPerPoint)},
-			Label{},
+			Label{Text: "Цена пункта"},
+			LineEdit{AssignTo: &f.money, Text: fm(cfg.MoneyPerPoint), MinSize: Size{Width: 100}},
+			ComboBox{
+				AssignTo: &f.moneyUnit,
+				Model:    moneyUnits,
+				MinSize:  Size{Width: 50},
+			},
 
 			Label{Text: "Рабочие объёмы ×1..×4"},
 			Composite{
@@ -358,18 +426,45 @@ func runApp(cfg *Config, configPath string) {
 				},
 			},
 			Label{},
+		},
+	}
 
+	grpES := GroupBox{
+		Title:  "EasyScalp — рабочие объёмы",
+		Layout: Grid{Columns: 3, Spacing: 6},
+		Children: []Widget{
+			Label{Text: "Секция рынка"},
+			ComboBox{
+				AssignTo: &f.tradeMarket,
+				Model:    tradeMarkets,
+			},
+			Label{},
+		},
+	}
+
+	grpFSR := GroupBox{
+		Title:  "FSR — рабочие объёмы",
+		Layout: Grid{Columns: 3, Spacing: 6},
+		Children: []Widget{
+			Label{Text: "Секция рынка"},
+			ComboBox{
+				AssignTo: &f.fsrMarket,
+				Model:    fsrMarkets,
+			},
 			Label{},
 		},
 	}
 
 	_, err := MainWindow{
 		Title:   AppName + " v" + AppVersion,
-		MinSize: Size{500, 420},
-		Size:    Size{560, 480},
-		Layout:  VBox{MarginsZero: false, Spacing: 6},
+		MinSize: Size{520, 520},
+		Size:    Size{580, 580},
+		Layout:  VBox{MarginsZero: false, Spacing: 4},
 		Children: []Widget{
-			grp,
+			grpData,
+			grpCalc,
+			grpES,
+			grpFSR,
 			TextEdit{AssignTo: &te, ReadOnly: true, HScroll: true, VScroll: true},
 			Composite{
 				Layout: HBox{MarginsZero: false, Spacing: 8},

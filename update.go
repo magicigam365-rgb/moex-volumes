@@ -80,7 +80,8 @@ func checkForUpdate(client *http.Client) (*GitHubRelease, string, error) {
 }
 
 // downloadUpdate downloads the file from URL and saves it to destPath.
-func downloadUpdate(client *http.Client, url string, destPath string) error {
+// onProgress is called with bytes downloaded / total bytes (0,0 if total unknown).
+func downloadUpdate(client *http.Client, url string, destPath string, onProgress func(downloaded, total int64)) error {
 	resp, err := client.Get(url)
 	if err != nil {
 		return fmt.Errorf("ошибка загрузки: %w", err)
@@ -94,19 +95,38 @@ func downloadUpdate(client *http.Client, url string, destPath string) error {
 		return err
 	}
 
+	total := resp.ContentLength
 	tmpPath := destPath + ".tmp"
 	out, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	n, err := io.Copy(out, resp.Body)
+
+	buf := make([]byte, 32*1024)
+	var downloaded int64
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, wErr := out.Write(buf[:n]); wErr != nil {
+				out.Close()
+				os.Remove(tmpPath)
+				return fmt.Errorf("ошибка записи: %w", wErr)
+			}
+			downloaded += int64(n)
+			if onProgress != nil {
+				onProgress(downloaded, total)
+			}
+		}
+		if readErr != nil {
+			break
+		}
+	}
 	out.Close()
 	if err != nil {
 		os.Remove(tmpPath)
-		return fmt.Errorf("ошибка записи: %w", err)
+		return fmt.Errorf("ошибка чтения: %w", err)
 	}
 
-	_ = n // bytes written
 	if err := os.Rename(tmpPath, destPath); err != nil {
 		return err
 	}

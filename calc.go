@@ -34,10 +34,16 @@ func calcVolFut(avgVolume float64, sec *Security) (int64, bool) {
 // обходится в moneyPerPoint рублей:
 //   акции:    O = moneyPerPoint / (MinStep * LotSize)
 //   фьючерсы: O = moneyPerPoint / StepPrice   (StepPrice = стоимость шага за лот)
+// Если moneyUnit == "%", то moneyPerPoint пересчитывается как процент от стоимости контракта:
+//   moneyPerPoint = (moneyPerPoint / 100) * Last * LotSize
 // Если стоимость шага больше moneyPerPoint (подогнать нельзя) — возвращает 0, false.
-func calcWorkVol(sec *Security, moneyPerPoint float64) (float64, bool) {
+func calcWorkVol(sec *Security, moneyPerPoint float64, moneyUnit string) (float64, bool) {
 	if sec == nil {
 		return 0, false
+	}
+	mp := moneyPerPoint
+	if moneyUnit == "%" && sec.Last > 0 && sec.LotSize > 0 {
+		mp = moneyPerPoint / 100.0 * sec.Last * float64(sec.LotSize)
 	}
 	var stepCost float64
 	if sec.IsFutures {
@@ -45,10 +51,10 @@ func calcWorkVol(sec *Security, moneyPerPoint float64) (float64, bool) {
 	} else {
 		stepCost = sec.MinStep * float64(sec.LotSize)
 	}
-	if stepCost <= 0 || stepCost > moneyPerPoint {
+	if stepCost <= 0 || stepCost > mp {
 		return 0, false
 	}
-	return moneyPerPoint / stepCost, true
+	return mp / stepCost, true
 }
 
 // workValues builds First..Fifth рабочие объёмы:

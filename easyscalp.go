@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -12,6 +13,7 @@ var (
 	reEntry  = regexp.MustCompile(`(?s)(<(?:\w+:)?)KeyValueOfstringMarketSettingsGU98z0zq([^>]*>)(.*?)(</(?:\w+:)?)KeyValueOfstringMarketSettingsGU98z0zq(>)`)
 	reKey    = regexp.MustCompile(`(?s)<[^ >]+:Key>(.*?)</[^ >]+:Key>`)
 	reSymID  = regexp.MustCompile(`(?s)<(?:\w+:)?SymbolID>([^<]+)</(?:\w+:)?SymbolID>`)
+	reAccID  = regexp.MustCompile(`(?s)<AccountID>([^<]*)</AccountID>`)
 	reTrade  = regexp.MustCompile(`(?i)^Trade_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_Settings\.xml$`)
 )
 
@@ -65,10 +67,11 @@ func updateEasyScalp(filePath string, data *MarketData, cfg *Config, logf func(s
 			continue
 		}
 		key := strings.TrimSpace(km[1])
-		ticker := strings.TrimSuffix(key, "_MOEX_STOCK")
-		if ticker == key {
+		idx := strings.LastIndex(key, "_MOEX_")
+		if idx <= 0 {
 			continue
 		}
+		ticker := key[:idx]
 		vol, work := data.GetVolumes(ticker, false)
 		if vol <= 0 {
 			lost = append(lost, key)
@@ -97,10 +100,85 @@ func updateEasyScalp(filePath string, data *MarketData, cfg *Config, logf func(s
 	return updated, lost, nil
 }
 
+// TradeFileInfo holds metadata about one Trade_*_Settings.xml file.
+type TradeFileInfo struct {
+	FileName string
+	Account  string // AccountID (empty = default)
+	SymbolID string // e.g. SBER_MOEX_STOCK
+	Ticker   string // e.g. SBER
+	Market   string // STOCK, FUT, CURRENCY, etc.
+}
+
+// ScanTradeFiles reads all Trade_*_Settings.xml and returns metadata.
+func ScanTradeFiles(appSettingsPath string) []TradeFileInfo {
+	settingsDir := filepath.Join(filepath.Dir(appSettingsPath), "..", "Settings")
+	entries, err := os.ReadDir(settingsDir)
+	if err != nil {
+		return nil
+	}
+	var files []TradeFileInfo
+	for _, e := range entries {
+		if e.IsDir() || !reTrade.MatchString(e.Name()) {
+			continue
+		}
+		path := filepath.Join(settingsDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		text := string(data)
+
+		sm := reSymID.FindStringSubmatch(text)
+		if len(sm) < 2 {
+			continue
+		}
+		symID := strings.TrimSpace(sm[1])
+
+		am := reAccID.FindStringSubmatch(text)
+		account := ""
+		if len(am) >= 2 {
+			account = strings.TrimSpace(am[1])
+		}
+
+		ticker := symID
+		market := ""
+		// Auto-detect market from SymbolID suffix: TICKER_MOEX_MARKET
+		if idx := strings.LastIndex(symID, "_MOEX_"); idx > 0 {
+			ticker = symID[:idx]
+			market = symID[idx+6:] // after "_MOEX_"
+		}
+
+		files = append(files, TradeFileInfo{
+			FileName: e.Name(),
+			Account:  account,
+			SymbolID: symID,
+			Ticker:   ticker,
+			Market:   market,
+		})
+	}
+	return files
+}
+
+// ScanTradeMarketsGeneric returns unique market types from Trade files.
+func ScanTradeMarketsGeneric(appSettingsPath string) []string {
+	files := ScanTradeFiles(appSettingsPath)
+	seen := make(map[string]bool)
+	var markets []string
+	for _, f := range files {
+		if f.Market != "" && !seen[f.Market] {
+			seen[f.Market] = true
+			markets = append(markets, f.Market)
+		}
+	}
+	sort.Strings(markets)
+	return markets
+}
+
 // updateTradeSettings scans Config/Settings/Trade_*_Settings.xml files.
 // Each file corresponds to one open stakan window. The <SymbolID> element
-// identifies the ticker (e.g. SBER_MOEX_STOCK). We update QuoteMaxVolume,
-// QuoteBigVolume1, QuoteBigVolume2, ClusterVolumeScaleVol, OrderSize1..5.
+// identifies the ticker (e.g. SBER_MOEX_STOCK).
+// Filter: if cfg.EasyScalpAccount != "", only update files with matching AccountID.
+//          if cfg.EasyScalpMarket != "", only update files with matching market.
 func updateTradeSettings(appSettingsPath string, data *MarketData, cfg *Config, logf func(string, ...interface{})) (int, error) {
 	settingsDir := filepath.Join(filepath.Dir(appSettingsPath), "..", "Settings")
 	entries, err := os.ReadDir(settingsDir)
@@ -108,6 +186,12 @@ func updateTradeSettings(appSettingsPath string, data *MarketData, cfg *Config, 
 		logf("Папка настроек EasyScalp не найдена (%s) — пропускаем Trade-файлы", settingsDir)
 		return 0, nil
 	}
+
+	filterAccount := strings.TrimSpace(cfg.EasyScalpAccount)
+	if filterAccount == "Личный" {
+		filterAccount = "" // empty AccountID = default
+	}
+	filterMarket := strings.TrimSpace(cfg.EasyScalpMarket)
 
 	updated := 0
 	for _, e := range entries {
@@ -126,13 +210,34 @@ func updateTradeSettings(appSettingsPath string, data *MarketData, cfg *Config, 
 			continue
 		}
 		symID := strings.TrimSpace(sm[1])
+
+		// Extract market from SymbolID: SBER_MOEX_STOCK -> STOCK
+		market := ""
+		if i := strings.LastIndex(symID, "_MOEX_"); i > 0 {
+			market = symID[i+6:]
+		}
+
+		// Filter by market
+		if filterMarket != "" && market != filterMarket {
+			continue
+		}
+
+		// Filter by AccountID
+		if filterAccount != "" {
+			am := reAccID.FindStringSubmatch(text)
+			account := ""
+			if len(am) >= 2 {
+				account = strings.TrimSpace(am[1])
+			}
+			if account != filterAccount {
+				continue
+			}
+		}
+
 		// Extract ticker from SymbolID: "SBER_MOEX_STOCK" -> "SBER", "SiH6_MOEX_FUT" -> "SiH6"
 		ticker := symID
-		for _, suffix := range []string{"_MOEX_STOCK", "_MOEX_FUT"} {
-			if strings.HasSuffix(ticker, suffix) {
-				ticker = strings.TrimSuffix(ticker, suffix)
-				break
-			}
+		if idx := strings.LastIndex(symID, "_MOEX_"); idx > 0 {
+			ticker = symID[:idx]
 		}
 		vol, work := data.GetVolumes(ticker, false)
 		if vol <= 0 {
@@ -152,7 +257,7 @@ func updateTradeSettings(appSettingsPath string, data *MarketData, cfg *Config, 
 			continue
 		}
 		updated++
-		logf("  Trade-settings: %s -> %s Vol=%d base=%d work=%v", e.Name(), symID, vol, base, work)
+		logf("  Trade-settings: %s -> %s [%s] Vol=%d base=%d work=%v", e.Name(), symID, market, vol, base, work)
 	}
 	return updated, nil
 }

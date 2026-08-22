@@ -5,15 +5,20 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
-// rePrefixFromName extracts the prefix from "<prefix>.XDSD.TQBR.<TICKER>_Settings.tmp"
-// or "<prefix>.XDSD.FUT.<SHORTNAME>_Settings.tmp" — everything before ".XDSD."
-var rePrefixFromName = regexp.MustCompile(`^(.+)\.XDSD\.(TQBR|FUT)\.`)
+// rePrefixFromName extracts the prefix from "<prefix>.XDSD.<MARKET>.<TICKER>_Settings.tmp"
+// — everything before ".XDSD."
+var rePrefixFromName = regexp.MustCompile(`^(.+)\.XDSD\.`)
+
+// reMarketFromName extracts the market type (TQBR, FUT, MTQR, etc.) from
+// "<prefix>.XDSD.<MARKET>.<TICKER>_Settings.tmp"
+var reMarketFromName = regexp.MustCompile(`\.XDSD\.(\w+)\.`)
 
 // detectPrefixes scans the MVS directory for *_Settings.tmp files and extracts
-// the prefixes (everything before ".XDSD.") for stocks and futures.
+// the prefixes (everything before ".XDSD.") for all market types.
 func detectPrefixes(dir string) (prefixStock, prefixFut string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -28,8 +33,14 @@ func detectPrefixes(dir string) (prefixStock, prefixFut string) {
 			continue
 		}
 		p := m[1]
-		switch m[2] {
-		case "TQBR":
+		// Determine market type from filename
+		mm := reMarketFromName.FindStringSubmatch(e.Name())
+		market := ""
+		if len(mm) >= 2 {
+			market = mm[1]
+		}
+		switch market {
+		case "TQBR", "MTQR":
 			if prefixStock == "" {
 				prefixStock = p
 			}
@@ -44,11 +55,6 @@ func detectPrefixes(dir string) (prefixStock, prefixFut string) {
 	}
 	return prefixStock, prefixFut
 }
-var reTickerFromName = regexp.MustCompile(`\.XDSD\.TQBR\.(.+)_Settings\.tmp$`)
-
-// reFutTickerFromName extracts the фьючерс SHORTNAME from
-// "<prefix>.XDSD.FUT.<SHORTNAME>_Settings.tmp"
-var reFutTickerFromName = regexp.MustCompile(`\.XDSD\.FUT\.(.+)_Settings\.tmp$`)
 
 // setAttrInSection replaces Value="..." on the given element name inside a section.
 // Matches <ElementName ... Value="OLD" ... /> (attribute order preserved).
@@ -94,11 +100,46 @@ func domClusterValues(vol int64, cfg *Config) (filled, big, huge int64) {
 	return filled, big, huge
 }
 
-// updateStakany scans the MVS directory for стаканы акций и фьючерсов and
-// writes DOM, CLUSTER_PANEL and TRADING sections.
-//   акции:  "<prefix>.XDSD.TQBR.*_Settings.tmp"
-//   фьючерсы: "<prefix_fut>.XDSD.FUT.*_Settings.tmp"
-// Для акций тикер — SECID, для фьючерсов — SHORTNAME (AFLT-9.26).
+// reStakanFile matches XDSD stakan files: <prefix>.XDSD.<MARKET>.<TICKER>_Settings.tmp
+var reStakanFile = regexp.MustCompile(`^(.+)\.XDSD\.(\w+)\.(.+)_Settings\.tmp$`)
+
+// parseStakanName extracts prefix, market and ticker from a stakan filename.
+// Handles both XDSD and non-XDSD formats:
+//
+//	XDSD:   Lite Invest.XDSD.TQBR.SBER_Settings.tmp → prefix="Lite Invest", market=TQBR, ticker=SBER
+//	Direct: TRNSQD.4.FUT.MXU6_Settings.tmp → prefix=TRNSQD, market=FUT, ticker=MXU6
+//	Direct: TINKD.FUTSI0926000_Settings.tmp → prefix=TINKD, market=FUT, ticker=SI0926000
+//	Direct: BINAD.CCUR.BTCUSDT_Settings.tmp → prefix=BINAD, market=CCUR, ticker=BTCUSDT
+//	Direct: BYBITD.linear.BTCUSDT_Settings.tmp → prefix=BYBITD, market=linear, ticker=BTCUSDT
+func parseStakanName(name string) (prefix, market, ticker string, ok bool) {
+	if !strings.HasSuffix(name, "_Settings.tmp") {
+		return "", "", "", false
+	}
+	base := strings.TrimSuffix(name, "_Settings.tmp")
+
+	// Try XDSD format first
+	if m := reStakanFile.FindStringSubmatch(name); m != nil {
+		return strings.TrimSpace(m[1]), m[2], m[3], true
+	}
+
+	// Non-XDSD: split by dots, find market and ticker
+	parts := strings.Split(base, ".")
+	if len(parts) < 3 {
+		return "", "", "", false
+	}
+	// Last part is ticker, second-to-last is market, everything before is prefix
+	ticker = parts[len(parts)-1]
+	market = parts[len(parts)-2]
+	prefix = strings.Join(parts[:len(parts)-2], ".")
+	if prefix == "" || market == "" || ticker == "" {
+		return "", "", "", false
+	}
+	return prefix, market, ticker, true
+}
+
+// updateStakany scans the MVS directory for стаканы and writes DOM, CLUSTER_PANEL and TRADING sections.
+// Works with any market type (TQBR, FUT, MTQR, CRYPTO, etc.) and any dispatcher (XDSD, TINKD, TRNSQD, etc.).
+// Фильтрация: cfg.FSRPrefix ("" = все), cfg.FSRMarket ("" = все).
 func updateStakany(dir string, cfg *Config, data *MarketData, logf func(string, ...interface{})) (int, []string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -106,35 +147,46 @@ func updateStakany(dir string, cfg *Config, data *MarketData, logf func(string, 
 		return 0, nil, nil
 	}
 
-	var files []struct {
+	filterPrefix := strings.TrimSpace(cfg.FSRPrefix)
+	filterMarket := strings.TrimSpace(cfg.FSRMarket)
+
+	type stakanFile struct {
 		name   string
 		ticker string
+		market string
 		fut    bool
 	}
+	var files []stakanFile
+
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		name := e.Name()
-		if strings.HasPrefix(name, strings.TrimSpace(cfg.Prefix)) && strings.HasSuffix(name, "_Settings.tmp") {
-			if m := reTickerFromName.FindStringSubmatch(name); len(m) == 2 {
-				files = append(files, struct {
-					name   string
-					ticker string
-					fut    bool
-				}{name, m[1], false})
-				continue
-			}
+		if !strings.HasSuffix(name, "_Settings.tmp") {
+			continue
 		}
-		if strings.HasPrefix(name, strings.TrimSpace(cfg.PrefixFut)) && strings.HasSuffix(name, "_Settings.tmp") {
-			if m := reFutTickerFromName.FindStringSubmatch(name); len(m) == 2 {
-				files = append(files, struct {
-					name   string
-					ticker string
-					fut    bool
-				}{name, m[1], true})
-			}
+
+		prefix, market, ticker, ok := parseStakanName(name)
+		if !ok {
+			continue
 		}
+
+		// Фильтр по рынку
+		if filterMarket != "" && market != filterMarket {
+			continue
+		}
+		// Фильтр по префиксу (пропу)
+		if filterPrefix != "" && prefix != filterPrefix {
+			continue
+		}
+
+		files = append(files, stakanFile{
+			name:   name,
+			ticker: ticker,
+			market: market,
+			fut:    market == "FUT",
+		})
 	}
 
 	updated := 0
@@ -181,6 +233,85 @@ func updateStakany(dir string, cfg *Config, data *MarketData, logf func(string, 
 			continue
 		}
 		updated++
+		base := applyK(vol, cfg.KLoad)
+		logf("  FSR %s: %s [%s] Vol=%d base=%d work=%v", f.market, ticker, f.name, vol, base, work)
 	}
 	return updated, lost, nil
+}
+
+// ScanFSRPrefixAccounts scans MVS and returns a map of prefix -> money_per_point.
+// Each prefix represents a separate trading account (prop or personal).
+func ScanFSRPrefixAccounts(mvsDir string) map[string]float64 {
+	entries, err := os.ReadDir(mvsDir)
+	if err != nil {
+		return nil
+	}
+	result := make(map[string]float64)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_Settings.tmp") {
+			continue
+		}
+		pfx, _, _, ok := parseStakanName(e.Name())
+		if !ok {
+			continue
+		}
+		if _, exists := result[pfx]; !exists {
+			result[pfx] = 0.2 // default
+		}
+	}
+	return result
+}
+
+// ScanFSRPrefixMarkets returns a map of prefix -> set of markets for cascading filter.
+func ScanFSRPrefixMarkets(mvsDir string) map[string][]string {
+	entries, err := os.ReadDir(mvsDir)
+	if err != nil {
+		return nil
+	}
+	raw := make(map[string]map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_Settings.tmp") {
+			continue
+		}
+		pfx, mkt, _, ok := parseStakanName(e.Name())
+		if !ok {
+			continue
+		}
+		if raw[pfx] == nil {
+			raw[pfx] = make(map[string]bool)
+		}
+		raw[pfx][mkt] = true
+	}
+	result := make(map[string][]string)
+	for pfx, mktSet := range raw {
+		var mkts []string
+		for m := range mktSet {
+			mkts = append(mkts, m)
+		}
+		sort.Strings(mkts)
+		result[pfx] = mkts
+	}
+	return result
+}
+
+// ScanFSRMarketsGeneric returns unique market types from any stakan files in MVS.
+func ScanFSRMarketsGeneric(mvsDir string) []string {
+	entries, err := os.ReadDir(mvsDir)
+	if err != nil {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var markets []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_Settings.tmp") {
+			continue
+		}
+		_, mkt, _, ok := parseStakanName(e.Name())
+		if ok && !seen[mkt] {
+			seen[mkt] = true
+			markets = append(markets, mkt)
+		}
+	}
+	sort.Strings(markets)
+	return markets
 }

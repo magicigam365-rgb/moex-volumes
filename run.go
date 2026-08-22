@@ -49,8 +49,8 @@ func collectStockTickers(cfg *Config) ([]string, error) {
 			if prefix != "" && !strings.HasPrefix(name, prefix) {
 				continue
 			}
-			if m := reTickerFromName.FindStringSubmatch(name); len(m) == 2 {
-				set[m[1]] = true
+			if _, _, t, ok := parseStakanName(name); ok {
+				set[t] = true
 			}
 		}
 	}
@@ -59,9 +59,9 @@ func collectStockTickers(cfg *Config) ([]string, error) {
 		for _, m := range reKey.FindAllStringSubmatch(string(data), -1) {
 			if len(m) == 2 {
 				key := strings.TrimSpace(m[1])
-				t := strings.TrimSuffix(key, "_MOEX_STOCK")
-				if t != key {
-					set[t] = true
+				// Auto-detect ticker from any _MOEX_* suffix
+				if idx := strings.LastIndex(key, "_MOEX_"); idx > 0 {
+					set[key[:idx]] = true
 				}
 			}
 		}
@@ -90,8 +90,8 @@ func collectFutTickers(cfg *Config) ([]string, error) {
 			if prefix != "" && !strings.HasPrefix(name, prefix) {
 				continue
 			}
-			if m := reFutTickerFromName.FindStringSubmatch(name); len(m) == 2 {
-				set[m[1]] = true
+			if _, _, t, ok := parseStakanName(name); ok {
+				set[t] = true
 			}
 		}
 	}
@@ -100,9 +100,8 @@ func collectFutTickers(cfg *Config) ([]string, error) {
 		for _, m := range reKey.FindAllStringSubmatch(string(data), -1) {
 			if len(m) == 2 {
 				key := strings.TrimSpace(m[1])
-				t := strings.TrimSuffix(key, "_MOEX_FUT")
-				if t != key {
-					set[t] = true
+				if idx := strings.LastIndex(key, "_MOEX_"); idx > 0 {
+					set[key[:idx]] = true
 				}
 			}
 		}
@@ -253,7 +252,7 @@ func Run(opts *RunOptions) error {
 			opts.logf("  %s: объём = 0 — пропуск", t)
 			continue
 		}
-		o, oOk := calcWorkVol(sec, cfg.MoneyPerPoint)
+		o, oOk := calcWorkVol(sec, cfg.MoneyPerPoint, cfg.MoneyUnit)
 		work := workValues(o, oOk, cfg, t)
 		stepCost := sec.MinStep * float64(sec.LotSize)
 		if oOk && stepCost > 0 {
@@ -282,7 +281,7 @@ func Run(opts *RunOptions) error {
 			opts.logf("  FUT %s: объём = 0 — пропуск", name)
 			continue
 		}
-		o, oOk := calcWorkVol(sec, cfg.MoneyPerPoint)
+		o, oOk := calcWorkVol(sec, cfg.MoneyPerPoint, cfg.MoneyUnit)
 		work := workValues(o, oOk, cfg, name)
 		if oOk {
 			opts.logf("  FUT %-12s Vol=%-9d шаг=%.4fруб O=%.2f -> %v", name, vol, sec.StepPrice, o, work)

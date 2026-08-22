@@ -31,7 +31,8 @@ type Config struct {
 	KLoad            float64  `json:"k_load"`            // загрузка объёмов: DOM/FilledAt и CLUSTER 1:1
 	KVol1            float64  `json:"k_vol1"`            // объёмы 1: DOM/BigAmount
 	KVol2            float64  `json:"k_vol2"`            // объёмы 2: DOM/HugeAmount
-	MoneyPerPoint    float64  `json:"money_per_point"`   // цена 1 пункта в рублях (1.0, 0.5, 0.2…)
+	MoneyPerPoint    float64  `json:"money_per_point"`   // цена 1 пункта (1.0, 0.5, 0.2…)
+	MoneyUnit        string   `json:"money_unit"`         // единица: "₽/$" или "%"
 	WorkK            []float64 `json:"work_k"`           // коэффициенты рабочих объёмов First..Fourth (по умолчанию 1,2,3,0.5)
 	MakeBackup       bool     `json:"make_backup"`
 	HTTPTimeoutSec   int      `json:"http_timeout_sec"`
@@ -40,6 +41,14 @@ type Config struct {
 	// Новые поля
 	DataSource string `json:"data_source"` // "moex" или "prop" — источник данных
 	PropName   string `json:"prop_name"`   // имя выбранного пропа
+
+	// Фильтрация Trade-файлов EasyScalp
+	EasyScalpAccount string `json:"easyscalp_account"` // AccountID пропа ("", "MD264564")
+	EasyScalpMarket  string `json:"easyscalp_market"`  // рынок: "", "STOCK", "FUT", "CURRENCY"
+
+	// Фильтрация стаканов FSR
+	FSRPrefix  string `json:"fsr_prefix"`  // префикс пропа ("", "Lite Invest")
+	FSRMarket  string `json:"fsr_market"`  // рынок: "", "TQBR", "FUT"
 
 	// Загружаемые из reference_file справочники.
 	MaxLots map[string]int     `json:"-"`
