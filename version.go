@@ -7,7 +7,7 @@ const (
 
 // GitHub repo for updates (owner/repo).
 const (
-	GitHubOwner = "YOUR_GITHUB_USER"
+	GitHubOwner = "magicigam365-rgb"
 	GitHubRepo  = "moex-volumes"
 )
 
