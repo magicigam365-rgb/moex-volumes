@@ -25,7 +25,7 @@ var Changelog = []VersionEntry{
 	},
 	{
 		Version: "1.1",
-		Date:    "2026-08-21",
+		Date:    "2026-08-22",
 		Changes: []string{
 			"Версионирование и автообновление через GitHub",
 			"Выбор проп-счёта из списка",
