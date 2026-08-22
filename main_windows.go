@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/lxn/walk"
 	. "github.com/lxn/walk/declarative"
@@ -45,8 +46,15 @@ func main() {
 }
 
 // showAbout opens the "Справка" dialog with the full user guide.
+// Uses a mutex to prevent opening multiple instances.
+var helpMu sync.Mutex
+
 func showAbout() {
+	if !helpMu.TryLock() {
+		return
+	}
 	walk.MsgBox(nil, helpTitle, helpText, walk.MsgBoxIconInformation)
+	helpMu.Unlock()
 }
 
 // checkAndNotifyUpdate checks GitHub for updates and shows dialog if available.
