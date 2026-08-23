@@ -308,10 +308,6 @@ func runApp(cfg *Config, configPath string) {
 					next.PrefixFut = ""
 					next.EasyScalpAccount = prop.AccountID
 				}
-				if prop.MoneyPerPoint > 0 {
-					next.MoneyPerPoint = prop.MoneyPerPoint
-				}
-				f.money.SetText(strconv.FormatFloat(next.MoneyPerPoint, 'f', -1, 64))
 			}
 		}
 
