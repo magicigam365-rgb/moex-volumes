@@ -291,6 +291,7 @@ func runApp(cfg *Config, configPath string) {
 				// Если выбран конкретный префикс (личный счёт в FSR)
 				if prop.Source == "fsr" && prop.Name != "FSR Launcher" && prop.Name != "FSR Launcher (x64)" {
 					next.FSRPrefix = prop.Name
+					next.Prefix = prop.Name
 				}
 				// Если выбран конкретный AccountID в EasyScalp
 				if prop.Source == "easyscalp" && prop.AccountID != "" {
