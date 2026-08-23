@@ -288,13 +288,24 @@ func runApp(cfg *Config, configPath string) {
 				prop := props[idx]
 				next.FSRMvsDir = prop.MVSPath
 				next.EasyScalpFile = prop.AppSettings
-				// Если выбран конкретный префикс (личный счёт в FSR)
-				if prop.Source == "fsr" && prop.Name != "FSR Launcher" && prop.Name != "FSR Launcher (x64)" {
-					next.FSRPrefix = prop.Name
-					next.Prefix = prop.Name
+				if prop.Source == "fsr" {
+					next.EasyScalpAccount = ""
+					next.EasyScalpMarket = ""
+					if prop.Name != "FSR Launcher" && prop.Name != "FSR Launcher (x64)" {
+						next.FSRPrefix = prop.Name
+						next.Prefix = prop.Name
+						next.PrefixFut = prop.Name
+					} else {
+						next.FSRPrefix = ""
+						next.Prefix = ""
+						next.PrefixFut = ""
+					}
 				}
-				// Если выбран конкретный AccountID в EasyScalp
-				if prop.Source == "easyscalp" && prop.AccountID != "" {
+				if prop.Source == "easyscalp" {
+					next.FSRPrefix = ""
+					next.FSRMarket = ""
+					next.Prefix = ""
+					next.PrefixFut = ""
 					next.EasyScalpAccount = prop.AccountID
 				}
 				if prop.MoneyPerPoint > 0 {
